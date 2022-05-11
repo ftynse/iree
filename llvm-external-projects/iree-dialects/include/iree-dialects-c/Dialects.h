@@ -33,6 +33,15 @@ MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(IREELinalgExt, iree_linalg_ext);
 
 MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(LinalgTransform, iree_linalg_transform);
 
+//===--------------------------------------------------------------------===//
+// TransformDialect
+//===--------------------------------------------------------------------===//
+
+MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(Transform, transform);
+
+MLIR_CAPI_EXPORTED void
+ireeRegisterTransformDialectExtensions(MlirContext context);
+
 //===----------------------------------------------------------------------===//
 // IREEPyDMDialect
 //===----------------------------------------------------------------------===//
