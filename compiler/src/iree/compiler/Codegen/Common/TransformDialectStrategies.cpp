@@ -7,6 +7,7 @@
 #include "iree/compiler/Codegen/Common/TransformDialectStrategies.h"
 
 #include <numeric>
+#include <optional>
 #include <type_traits>
 
 #include "iree-dialects/Dialect/LinalgTransform/StructuredTransformOpsExt.h"
@@ -251,9 +252,10 @@ struct ReductionSplitResult {
 /// leading elementwise operation.
 static ReductionSplitResult buildExpansionBubbleUp(
     ImplicitLocOpBuilder &b, Value variantH,
-    SplitReductionOp splitReductionTransformOp, bool hasLeadingEltwise) {
+    SplitReductionOp splitReductionTransformOp,
+    std::optional<Value> leadingEltwise) {
   ReductionSplitResult result;
-  if (!hasLeadingEltwise) {
+  if (!leadingEltwise) {
     result.splitFillH = splitReductionTransformOp.getFillOp();
     result.splitLinalgH = splitReductionTransformOp.getSplitLinalgOp();
     result.combinerH = splitReductionTransformOp.getCombiningLinalgOp();
@@ -280,8 +282,9 @@ static ReductionSplitResult buildExpansionBubbleUp(
 template <typename TileSizesType>
 static Value buildReductionStrategyBlockDistributionPart(
     ImplicitLocOpBuilder &b, Value variantH, Value originalFillH,
-    Value reductionH, Value optionalFusionRootH,
-    TileSizesType tileSizes0Generic, bool hasLeadingEltwise = false) {
+    Value reductionH, std::optional<Value> fusionRootH,
+    TileSizesType tileSizes0Generic,
+    std::optional<Value> leadingEltwise = std::nullopt) {
   // Step 1. Split the reduction to get meatier parallelism.
   // TODO: use a scf.foreach_thread for this.
   auto splitReductionTransformOp =
@@ -289,7 +292,7 @@ static Value buildReductionStrategyBlockDistributionPart(
                                  /*splitFactor=*/2,
                                  /*insertSplitDimension=*/1);
   ReductionSplitResult rs = buildExpansionBubbleUp(
-      b, variantH, splitReductionTransformOp, hasLeadingEltwise);
+      b, variantH, splitReductionTransformOp, leadingEltwise);
 
   // TODO: IREE needs own workgroup mapping attribute.
   // TODO: num of GPU block mapping attr is statically known here which is
@@ -303,8 +306,8 @@ static Value buildReductionStrategyBlockDistributionPart(
   SmallVector<Value> opsHToFuse(
       {rs.originalFillH ? rs.originalFillH : originalFillH, rs.splitFillH,
        rs.splitLinalgH});
-  if (!optionalFusionRootH) {
-    optionalFusionRootH = rs.combinerH;
+  if (!fusionRootH) {
+    fusionRootH = rs.combinerH;
   } else {
     opsHToFuse.push_back(rs.combinerH);
   }
@@ -315,14 +318,12 @@ static Value buildReductionStrategyBlockDistributionPart(
   // The presence of leading elementwise operation implies that dispatch region
   // formation happened using another transform dialect script and doesn't need
   // the workgroup count part.
-  if (hasLeadingEltwise) {
-    buildTFDWithTileSizes<TileToForeachThreadOp>(b, optionalFusionRootH,
-                                                 opsHToFuse, tileSizes0Generic,
-                                                 b.getArrayAttr({x}));
+  if (leadingEltwise) {
+    buildTFDWithTileSizes<TileToForeachThreadOp>(
+        b, *fusionRootH, opsHToFuse, tileSizes0Generic, b.getArrayAttr({x}));
   } else {
     buildTFDWithTileSizes<TileToForeachThreadAndWorkgroupCountRegionOp>(
-        b, optionalFusionRootH, opsHToFuse, tileSizes0Generic,
-        b.getArrayAttr({x}));
+        b, *fusionRootH, opsHToFuse, tileSizes0Generic, b.getArrayAttr({x}));
   }
 
   return variantH;
@@ -330,21 +331,22 @@ static Value buildReductionStrategyBlockDistributionPart(
 
 static Value buildReductionStrategyThreadDistributionPart(
     ImplicitLocOpBuilder &b, Value variantH, ArrayRef<int64_t> tileSizes1Fill,
-    ArrayRef<int64_t> tileSizes1Generic, bool hasLeadingEltwise,
-    bool hasTrailingEltwise) {
+    ArrayRef<int64_t> tileSizes1Generic, std::optional<Value> leadingEltwise,
+    std::optional<Value> trailingEltwise) {
   // TODO: Relying on ordering is brittle, harden this.
   Value matchedH = b.create<MatchOp>(
       variantH, ArrayRef<StringRef>{linalg::GenericOp::getOperationName(),
                                     linalg::FillOp::getOperationName()});
-  auto split = b.create<SplitHandlesOp>(
-      matchedH,
-      /*numResultHandles=*/4 + hasLeadingEltwise + hasTrailingEltwise);
-  Value firstFusionRootH = split.getResults()[1 + hasLeadingEltwise];
+  auto split = b.create<SplitHandlesOp>(matchedH,
+                                        /*numResultHandles=*/4 +
+                                            leadingEltwise.has_value() +
+                                            trailingEltwise.has_value());
+  Value firstFusionRootH = split.getResults()[1 + leadingEltwise.has_value()];
   SmallVector<Value> firstFusionGroupHs =
-      split.getResults().take_front(1 + hasLeadingEltwise);
+      split.getResults().take_front(1 + leadingEltwise.has_value());
   Value secondFusionRootH = split.getResults().back();
   SmallVector<Value> secondFusionGroupHs =
-      split.getResults().drop_front(2 + hasLeadingEltwise).drop_back();
+      split.getResults().drop_front(2 + leadingEltwise.has_value()).drop_back();
 
   auto z = mlir::gpu::GPUThreadMappingAttr::get(b.getContext(),
                                                 ::mlir::gpu::Threads::DimZ);
@@ -388,17 +390,21 @@ struct GPUReductionStrategyInfos {
 /// reduction operation and the fusion root. The leading elementwise and the
 /// fusion root may be null. If the fusion root is null, the reduction operation
 /// should be used as fusion root instead.
-static std::tuple<Value, Value, Value> reductionBlockDistributionHandles(
-    ImplicitLocOpBuilder &b, Value variantH, bool hasLeadingEltwise,
-    bool hasTrailingEltwise) {
+static std::tuple<std::optional<Value>, Value, std::optional<Value>>
+reductionBlockDistributionHandles(ImplicitLocOpBuilder &b, Value variantH,
+                                  bool hasLeadingEltwise,
+                                  bool hasTrailingEltwise) {
   Value originalGenericH =
       b.create<MatchOp>(variantH, linalg::GenericOp::getOperationName());
   auto op = b.create<SplitHandlesOp>(
       originalGenericH,
       /*numResultHandles=*/1 + hasLeadingEltwise + hasTrailingEltwise);
-  return std::make_tuple(hasLeadingEltwise ? op.getResults().front() : Value(),
-                         op.getResults().drop_front(hasLeadingEltwise).front(),
-                         hasTrailingEltwise ? op.getResults().back() : Value());
+  return std::make_tuple(
+      hasLeadingEltwise ? std::make_optional(op.getResults().front())
+                        : std::nullopt,
+      op.getResults().drop_front(hasLeadingEltwise).front(),
+      hasTrailingEltwise ? std::make_optional(op.getResults().back())
+                         : std::nullopt);
 }
 
 // TODO: generalize and automate over and over.
@@ -414,12 +420,12 @@ static void buildReductionCudaStrategy(ImplicitLocOpBuilder &b, Value variantH,
   // Step 1: Distribute to blocks using the current IREE lowering config.
   variantH = buildReductionStrategyBlockDistributionPart(
       b, variantH, originalFillH, reductionH, fusionRootH,
-      infos.workgroupTileSizes, infos.hasLeadingEltwise);
+      infos.workgroupTileSizes, leadingH);
 
   // Step 2. Second level of tiling + fusion parallelizes to threads.
   variantH = buildReductionStrategyThreadDistributionPart(
       b, variantH, infos.fillSecondTileSizes, infos.genericSecondTileSizes,
-      infos.hasLeadingEltwise, infos.hasTrailingEltwise);
+      leadingH, fusionRootH);
 
   // Step 3. Rank-reduce and vectorize.
   // TODO: assumes a single func::FuncOp to transform, may need hardening.
