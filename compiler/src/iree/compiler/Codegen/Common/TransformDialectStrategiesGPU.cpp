@@ -144,7 +144,7 @@ namespace {
 // TODO: refine sizes based on the bitwidth of the elemental type.
 class ReductionStrategyThreadDistributionSizes {
  public:
-  ReductionStrategyThreadDistributionSizes(
+  explicit ReductionStrategyThreadDistributionSizes(
       int64_t reductionDimensionSize = 0,
       int64_t maxNumThreadsToUse = iree_compiler::kCudaMaxNumThreads)
       : reductionDimensionSize(reductionDimensionSize),
@@ -216,9 +216,7 @@ struct GPUReductionStrategyInfos {
                                      int64_t reductionDimensionSize)
       : context(context),
         rank(rank),
-        reductionDimensionSize(reductionDimensionSize),
-        threadDistributionSizes(
-            ReductionStrategyThreadDistributionSizes(reductionDimensionSize)) {
+        reductionDimensionSize(reductionDimensionSize) {
     auto blockX =
         mlir::gpu::GPUBlockMappingAttr::get(context, mlir::gpu::Blocks::DimX);
     auto blockY =
@@ -226,6 +224,26 @@ struct GPUReductionStrategyInfos {
     auto blockZ =
         mlir::gpu::GPUBlockMappingAttr::get(context, mlir::gpu::Blocks::DimZ);
     allBlockAttrs = SmallVector<Attribute>{blockX, blockY, blockZ};
+
+    if (reductionDimensionSize >= 4) {
+      setThreadDistributionSizes(4);
+    } else if (reductionDimensionSize >= 2) {
+      setThreadDistributionSizes(2);
+    } else {
+      threadDistributionSizes =
+          ReductionStrategyThreadDistributionSizes(reductionDimensionSize);
+    }
+  }
+
+  void setThreadDistributionSizes(int64_t baseSize) {
+    splitPoint = reductionDimensionSize - reductionDimensionSize % baseSize;
+    threadDistributionSizes =
+        ReductionStrategyThreadDistributionSizes(splitPoint);
+    if (reductionDimensionSize % baseSize != 0) {
+      secondaryThreadDistributionSizes =
+          ReductionStrategyThreadDistributionSizes(reductionDimensionSize %
+                                                   baseSize);
+    }
   }
 
   /// Constructor quantities.
@@ -233,9 +251,12 @@ struct GPUReductionStrategyInfos {
   int64_t rank;
   int64_t reductionDimensionSize;
   ReductionStrategyThreadDistributionSizes threadDistributionSizes;
+  std::optional<ReductionStrategyThreadDistributionSizes>
+      secondaryThreadDistributionSizes = std::nullopt;
 
   /// Derived quantities.
   SmallVector<Attribute> allBlockAttrs;
+  int64_t splitPoint;
   // Tile sizes for the workgroup / determines grid size.
   SmallVector<int64_t> workgroupTileSizes;
   // Launch bounds for the workgroups / block size.
@@ -275,9 +296,9 @@ static std::pair<Value, Value> createReductionStrategyBlockDistribution(
                         gridReductionSelector.getRest());
 }
 
-static void createReductionStrategyThreadDistribution(
-    ImplicitLocOpBuilder &b, Value gridReductionH, Value maybeTiledTrailingH,
-    const GPUReductionStrategyInfos &infos) {
+static void createReductionStrategyReductionTiling(
+    ImplicitLocOpBuilder &b, Value reductionH, int rank,
+    const ReductionStrategyThreadDistributionSizes &sizes) {
   auto threadX = mlir::gpu::GPUThreadMappingAttr::get(b.getContext(),
                                                       mlir::gpu::Threads::DimX);
   auto threadY = mlir::gpu::GPUThreadMappingAttr::get(b.getContext(),
@@ -285,13 +306,13 @@ static void createReductionStrategyThreadDistribution(
 
   // Split the reduction into a parallel and combiner part, then tile the
   // parallel part and map it to a full warp so it works on vectors.
-  SmallVector<int64_t> leadingParallelDims(infos.rank - 1, 0);
+  SmallVector<int64_t> leadingParallelDims(rank - 1, 0);
   SmallVector<int64_t> numThreads = leadingParallelDims;
-  numThreads.push_back(infos.threadDistributionSizes.reductionTileSize);
+  numThreads.push_back(sizes.reductionTileSize);
   SmallVector<int64_t> tileSizes = leadingParallelDims;
-  tileSizes.push_back(infos.threadDistributionSizes.vectorTileSize);
+  tileSizes.push_back(sizes.vectorTileSize);
   auto tileReduction = b.create<transform::TileReductionUsingForeachThreadOp>(
-      /*target=*/gridReductionH,
+      /*target=*/reductionH,
       /*numThreads=*/numThreads,
       /*tileSizes=*/tileSizes,
       /*threadDimMapping=*/b.getArrayAttr(threadX));
@@ -308,15 +329,68 @@ static void createReductionStrategyThreadDistribution(
   iree_compiler::buildTileFuseDistToForeachThreadWithTileSizes(
       b, blockCombinerOpH, {}, getAsOpFoldResult(b.getI64ArrayAttr({1})),
       b.getArrayAttr(threadY));
+}
+
+static void createReductionStrategyThreadDistribution(
+    ImplicitLocOpBuilder &b, Value gridReductionH, Value maybeTiledTrailingH,
+    const GPUReductionStrategyInfos &infos) {
+  Value mainReductionH = gridReductionH;
+  Value leftoverReductionH = nullptr;
+  if (infos.secondaryThreadDistributionSizes) {
+    auto pdlOperation = pdl::OperationType::get(b.getContext());
+    auto split = b.create<transform::SplitOp>(
+        pdlOperation, pdlOperation, gridReductionH,
+        b.getI64IntegerAttr(infos.rank - 1), Value(),
+        b.getI64IntegerAttr(infos.splitPoint));
+    mainReductionH = split.getFirst();
+    leftoverReductionH = split.getSecond();
+  }
+  createReductionStrategyReductionTiling(b, mainReductionH, infos.rank,
+                                         infos.threadDistributionSizes);
+  if (leftoverReductionH) {
+    createReductionStrategyReductionTiling(
+        b, leftoverReductionH, infos.rank,
+        *infos.secondaryThreadDistributionSizes);
+  }
+
+  auto threadX = mlir::gpu::GPUThreadMappingAttr::get(b.getContext(),
+                                                      mlir::gpu::Threads::DimX);
+  // auto threadY = mlir::gpu::GPUThreadMappingAttr::get(b.getContext(),
+  //                                                     mlir::gpu::Threads::DimY);
+
+  // // Split the reduction into a parallel and combiner part, then tile the
+  // // parallel part and map it to a full warp so it works on vectors.
+  // SmallVector<int64_t> leadingParallelDims(infos.rank - 1, 0);
+  // SmallVector<int64_t> numThreads = leadingParallelDims;
+  // numThreads.push_back(infos.threadDistributionSizes.reductionTileSize);
+  // SmallVector<int64_t> tileSizes = leadingParallelDims;
+  // tileSizes.push_back(infos.threadDistributionSizes.vectorTileSize);
+  // auto tileReduction =
+  // b.create<transform::TileReductionUsingForeachThreadOp>(
+  //     /*target=*/gridReductionH,
+  //     /*numThreads=*/numThreads,
+  //     /*tileSizes=*/tileSizes,
+  //     /*threadDimMapping=*/b.getArrayAttr(threadX));
+  // Value blockParallelForeachThreadOp = tileReduction.getForeachThreadOp();
+  // Value blockParallelFillH = tileReduction.getFillOp();
+  // Value blockCombinerOpH = tileReduction.getCombiningLinalgOp();
+
+  // // Fuse the fill and pointwise to privatize them.
+  // blockParallelFillH = b.create<FuseIntoContainingOp>(
+  //     blockParallelFillH, blockParallelForeachThreadOp);
+
+  // // Map the combiner reduction to one thread along y so it can be mapped
+  // // further via predication.
+  // iree_compiler::buildTileFuseDistToForeachThreadWithTileSizes(
+  //     b, blockCombinerOpH, {}, getAsOpFoldResult(b.getI64ArrayAttr({1})),
+  //     b.getArrayAttr(threadY));
 
   // Map the potential maybeTiledTrailingH.
   if (maybeTiledTrailingH) {
     assert(infos.rank >= 1);
     SmallVector<int64_t> trailingTileSizes(infos.rank - 1, 0);
-    if (infos.rank > 1) {
-      trailingTileSizes.back() =
-          infos.threadDistributionSizes.reductionTileSize;
-    }
+    if (infos.rank > 1) trailingTileSizes.back() = infos.workgroupSize[0];
+
     auto res = iree_compiler::buildTileFuseToScfFor(
         b, maybeTiledTrailingH, {},
         getAsOpFoldResult(b.getI64ArrayAttr(trailingTileSizes)));
@@ -399,7 +473,12 @@ static FailureOr<GPUReductionStrategyInfos> matchGPUReduction(
   int64_t numParallelLoops = captures.rank - 1;
   info.workgroupTileSizes.append(numParallelLoops, 1);
   // Tile and distribute the reduction across `reductionTileSize` threads.
-  info.workgroupSize = {info.threadDistributionSizes.reductionTileSize, 1, 1};
+  info.workgroupSize = {
+      info.secondaryThreadDistributionSizes
+          ? std::max(info.threadDistributionSizes.reductionTileSize,
+                     info.secondaryThreadDistributionSizes->reductionTileSize)
+          : info.threadDistributionSizes.reductionTileSize,
+      1, 1};
   return info;
 }
 
