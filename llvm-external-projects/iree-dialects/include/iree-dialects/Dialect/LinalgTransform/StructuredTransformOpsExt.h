@@ -47,6 +47,18 @@ auto unpackRegisteredMatchCallback(ImplicitLocOpBuilder &b,
   return std::tuple_cat(a);
 }
 
+/// Build transform IR to dynamically selects the first non-empty handle; i.e.
+/// if (h1, h2) is:
+///   - (non-empty, non-empty), returns (h1, h2)
+///   - (empty, non-empty), returns (h2, empty)
+///   - (non-empty, empty), returns (h1, empty)
+///   - (empty, empty), returns (empty, empty)
+/// This is used as a normalization operation that replaces conditionals, either
+/// in C++ or in transform IR.
+/// This can be thought of as a control-flow -> data-dependent conversion.
+std::pair<Value, Value> buildSelectFirstNonEmpty(ImplicitLocOpBuilder &b,
+                                                 Value handle1, Value handle2);
+
 /// A tracking listener for tensor IR that checks for payload replacement
 /// errors.
 class ErrorCheckingTrackingListener : public tensor::TrackingListener {

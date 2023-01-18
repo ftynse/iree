@@ -586,6 +586,12 @@ transform_dialect::MovePrecedingOpIntoDispatchRegionOp::apply(
   return DiagnosedSilenceableFailure::success();
 }
 
+void transform_dialect::MovePrecedingOpIntoDispatchRegionOp::build(
+    OpBuilder &builder, OperationState &state, Value target,
+    Value dispatchRegion) {
+  build(builder, state, dispatchRegion.getType(), target, dispatchRegion);
+}
+
 void transform_dialect::MovePrecedingOpIntoDispatchRegionOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   transform::onlyReadsHandle(getTarget(), effects);
@@ -841,6 +847,36 @@ void transform_dialect::WrapInDispatchRegionOp::getEffects(
   transform::consumesHandle(getTarget(), effects);
   transform::producesHandle(getTransformed(), effects);
   transform::modifiesPayload(effects);
+}
+
+void transform_dialect::FilterOutAlreadyInDispatchRegionOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  transform::onlyReadsHandle(getTarget(), effects);
+  transform::producesHandle(getTransformed(), effects);
+  transform::onlyReadsPayload(effects);
+}
+
+DiagnosedSilenceableFailure
+transform_dialect::FilterOutAlreadyInDispatchRegionOp::apply(
+    transform::TransformResults &results, transform::TransformState &state) {
+  RaggedArray<Operation *> inputs;
+  for (Value operand : getTarget()) {
+    inputs.push_back(state.getPayloadOps(operand));
+    for (Operation *payload : inputs.at(inputs.size() - 1)) {
+      if (!payload->getParentOfType<Flow::DispatchWorkgroupsOp>()) continue;
+
+      for (OpResult result : getResults()) {
+        results.set(result, {});
+      }
+      return DiagnosedSilenceableFailure::success();
+    }
+  }
+
+  for (OpResult result : getResults()) {
+    results.set(result, inputs.at(result.getResultNumber()));
+  }
+
+  return DiagnosedSilenceableFailure::success();
 }
 
 #define GET_OP_CLASSES

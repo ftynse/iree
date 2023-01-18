@@ -103,7 +103,7 @@ static void buildSmallReductionStrategyThreadDistribution(
     Value reductionH, Value maybeTrailingH,
     const SmallReductionStrategy &strategy) {
   auto [fusionTargetH, fusionGroupH] =
-      iree_compiler::buildSelectFirstNonEmpty(b, maybeTrailingH, reductionH);
+      buildSelectFirstNonEmpty(b, maybeTrailingH, reductionH);
   MLIRContext *ctx = b.getContext();
   SmallVector<Attribute> threadDimMapping{threadX(ctx), threadY(ctx),
                                           threadZ(ctx)};
@@ -131,7 +131,7 @@ static void buildSmallReductionStrategyThreadDistribution(
   Value fusedH = b.create<ScalarizeOp>(
       anyOpType, tileResult.resultingFusedOpsHandles.front());
   auto [blockReductionH, maybeBlockTrailingH] =
-      iree_compiler::buildSelectFirstNonEmpty(b, fusedH, tiledH);
+      buildSelectFirstNonEmpty(b, fusedH, tiledH);
 
   // 2. Apply the 1d splitting strategy to the reduction part while specifying
   // a single thread. This triggers the splitting but not the thread mapping

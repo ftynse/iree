@@ -176,6 +176,9 @@ def MovePrecedingOpIntoDispatchRegionOp : Op<
     `:` functional-type(operands, results)
   }];
   let cppNamespace = "mlir::iree_compiler::IREE::transform_dialect";
+  let builders = [
+    OpBuilder<(ins "Value":$target, "Value":$dispatchRegion)>
+  ];
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure apply(
         ::mlir::transform::TransformResults &transformResults,
@@ -229,7 +232,7 @@ def MoveSucceedingOpIntoDispatchRegionOp : Op<
 
     All operands of the target are replaced with values that are defined inside
     of the dispatch region when possible. All uses of the target op are
-    replaced with a newly ammended results of the dispatch region op.
+    replaced with a newly amended results of the dispatch region op.
 
     #### Return modes
 
@@ -253,6 +256,19 @@ def MoveSucceedingOpIntoDispatchRegionOp : Op<
         ::mlir::transform::TransformResults &transformResults,
         ::mlir::transform::TransformState &state);
   }];
+}
+
+def FilterOutAlreadyInDispatchRegionOp : Op<
+    Transform_Dialect, "iree.filter_out_already_in_dispatch_region", [
+      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+      DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  // TODO: check that has the same number of operands and reuslts
+  let description = [{}];
+  let arguments = (ins Variadic<TransformHandleTypeInterface>:$target);
+  let results = (outs Variadic<TransformHandleTypeInterface>:$transformed);
+  let assemblyFormat =
+      [{ $target attr-dict `:` functional-type(operands, results) }];
+  let cppNamespace = "mlir::iree_compiler::IREE::transform_dialect";
 }
 
 #endif // IREE_COMPILER_DIALECT_FLOW_TRANSFORMEXTENSIONS_FLOWEXTENSIONS

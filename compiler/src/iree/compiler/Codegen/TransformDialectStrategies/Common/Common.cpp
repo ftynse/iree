@@ -137,22 +137,6 @@ Value mlir::iree_compiler::buildCanonicalizationAndEnablingTransforms(
   return variantH;
 }
 
-/// Dynamically selects the first non-empty handle; i.e. if (h1, h2) is:
-///   - (non-empty, non-empty), returns (h1, h2)
-///   - (empty, non-empty), returns (h2, empty)
-///   - (non-empty, empty), returns (h1, empty)
-///   - (empty, empty), returns (empty, empty)
-/// This is used as a normalization operation that replaces conditionals, either
-/// in C++ or in transform IR.
-/// This can be thought of as a control-flow -> data-dependent conversion.
-std::pair<Value, Value> mlir::iree_compiler::buildSelectFirstNonEmpty(
-    ImplicitLocOpBuilder &b, Value handle1, Value handle2) {
-  auto anyOpType = transform::AnyOpType::get(b.getContext());
-  auto selector = b.create<TakeFirstOp>(anyOpType, anyOpType,
-                                        ArrayRef<Value>{handle1, handle2});
-  return std::make_pair(selector.getFirst(), selector.getRest());
-}
-
 mlir::iree_compiler::TileToScfForAndFuseResult
 mlir::iree_compiler::buildTileFuseToScfFor(ImplicitLocOpBuilder &b,
                                            Value isolatedParentOpH, Value rootH,
