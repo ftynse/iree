@@ -21,10 +21,60 @@ iree_tablegen_library(
 
 iree_cc_library(
   NAME
+    DispatchWithTransformDialect
+  SRCS
+    "DispatchWithTransformDialect.cpp"
+  DEPS
+    ::PassesIncGen
+    ::Transforms
+    IREELinalgExtDialect
+    IREELinalgTransformDialect
+    LLVMSupport
+    MLIRAffineDialect
+    MLIRArithDialect
+    MLIRLinalgDialect
+    MLIRPDLDialect
+    MLIRPDLInterpDialect
+    MLIRPass
+    MLIRSCFDialect
+    MLIRSupport
+    MLIRTensorDialect
+    MLIRTransformDialect
+    MLIRTransformDialectTransforms
+    iree::compiler::Dialect::Flow::IR
+    iree::compiler::Dialect::Flow::TransformExtensions::FlowExtensions
+  PUBLIC
+)
+
+iree_cc_library(
+  NAME
+    Passes
+  SRCS
+    "Passes.cpp"
+  DEPS
+    ::DispatchWithTransformDialect
+    ::PassesIncGen
+    ::Transforms
+    IREELinalgExtPasses
+    LLVMSupport
+    MLIRFuncDialect
+    MLIRLinalgTransforms
+    MLIRMemRefTransforms
+    MLIRPass
+    MLIRSupport
+    MLIRTransforms
+    iree::compiler::Dialect::Util::Transforms
+    iree::compiler::Utils
+  PUBLIC
+)
+
+iree_cc_library(
+  NAME
     Transforms
   HDRS
     "ConvertRegionToWorkgroups.h"
     "FormDispatchRegions.h"
+    "PassDetail.h"
     "Passes.h"
     "Passes.h.inc"
     "RegionOpUtils.h"
@@ -40,7 +90,6 @@ iree_cc_library(
     "ConvertToFlow.cpp"
     "DeduplicateExecutables.cpp"
     "DetachElementwiseFromNamedOps.cpp"
-    "DispatchWithTransformDialect.cpp"
     "DumpDispatchGraph.cpp"
     "EraseUnusedLinalgOperands.cpp"
     "ExpandTensorShapes.cpp"
@@ -56,8 +105,6 @@ iree_cc_library(
     "InterchangeTransposeGenericOps.cpp"
     "OptimizeNumerics.cpp"
     "OutlineDispatchRegions.cpp"
-    "PassDetail.h"
-    "Passes.cpp"
     "RaiseSpecialOps.cpp"
     "RegionOpUtils.cpp"
     "SetEncoding.cpp"
@@ -89,8 +136,6 @@ iree_cc_library(
     MLIRMathDialect
     MLIRMemRefDialect
     MLIRMemRefTransforms
-    MLIRPDLDialect
-    MLIRPDLInterpDialect
     MLIRParser
     MLIRPass
     MLIRSCFDialect
@@ -100,8 +145,6 @@ iree_cc_library(
     MLIRTensorUtils
     MLIRTilingInterface
     MLIRTosaDialect
-    MLIRTransformDialect
-    MLIRTransformDialectTransforms
     MLIRTransformUtils
     MLIRTransforms
     iree::compiler::Dialect::Flow::Conversion::TensorToFlow
