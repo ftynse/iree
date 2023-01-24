@@ -20,6 +20,9 @@ class Operation;
 class Region;
 
 namespace transform {
+using Param = Attribute;
+using MappedValue = llvm::PointerUnion<Operation *, Param>;
+
 namespace detail {
 /// Template-free implementation of TransformInterpreterPassBase::initialize.
 LogicalResult interpreterBaseInitializeImpl(
@@ -30,7 +33,8 @@ LogicalResult interpreterBaseInitializeImpl(
 /// Template-free implementation of
 /// TransformInterpreterPassBase::runOnOperation.
 LogicalResult interpreterBaseRunOnOperationImpl(
-    Operation *target, StringRef passName,
+    Operation *target, ArrayRef<ArrayRef<transform::MappedValue>> extraMapping,
+    StringRef passName,
     const std::shared_ptr<OwningOpRef<ModuleOp>> &sharedTransformModule,
     const Pass::Option<std::string> &transformFileName,
     const Pass::Option<std::string> &debugPayloadRootTag,
@@ -62,8 +66,7 @@ bool hasSharedTransformModuleImpl(
 /// The pass runs the transform dialect interpreter as directed by the options
 /// and customization hooks described below. The transform IR consumed by this
 /// pass may be present within the payload IR, e.g., as a nested module, or
-/// constructed on-the-fly. In the latter case, the concrete implementation must
-/// implement the corresponding hooks.
+/// constructed on-the-fly.
 ///
 /// It also provides the mechanism to dump reproducers into stderr
 /// (-debug-only=iree-transform-dialect-dump-repro) or into a temporary file
@@ -86,16 +89,13 @@ bool hasSharedTransformModuleImpl(
 /// Concrete passes must derive from this class instead of their generated base
 /// class (or PassWrapper), and supply themselves and the generated base class
 /// as template arguments. They are *not* expected to to implement `initialize`
-/// or `runOnOperation`. They *are* expected to call the copy constructor of
-/// this class in their copy constructors, short of which the file-based
-/// transform dialect script injection facility will become nonoperational.
+/// or `runOnOperation`, but may override them for behavior customization
+/// purposes. They *are* expected to call the copy constructor of this class in
+/// their copy constructors, short of which the file-based transform dialect
+/// script injection facility will become nonoperational.
 ///
-/// Concrete passes may customize the behavior by implementing the following
-/// functions:
-///
-///   * `getPayloadRoots` sets up the list of operations that are used as
-///   payload roots for invocations of the transform interpreter. By default,
-///   the interpreter is invoked once on the root operation of the pass.
+/// Concrete passes may additionally customize the behavior by implementing the
+/// following functions:
 ///
 ///   * `runBeforeInterpreter` is executed before each interpreter run and may
 ///   abort the pass if some preconditions are not met. By default, it does
@@ -104,14 +104,6 @@ bool hasSharedTransformModuleImpl(
 ///   * `runAfterInterpreter` is executed after each interpreter run and may
 ///   abort the pass if some postconditions are not met. By default, it does
 ///   nothing and succeeds.
-///
-///   * `constructTransformModule` is executed during pass initialization and
-///   may be used to build transform IR that will be fed to the interpreter if
-///   it isn't already present in the IR the pass operates on. This is useful
-///   when the transform IR cannot be injected into the IR processed by the
-///   pass. Transform IR module is shared by all copies of the pass and must not
-///   be modified during pass execution. Providing an external source of the
-///   transform IR disables this generation.
 template <typename Concrete, template <typename> typename GeneratedBase>
 class TransformInterpreterPassBase : public GeneratedBase<Concrete> {
 public:
@@ -158,33 +150,17 @@ public:
   /// fails.
   LogicalResult runAfterInterpreter(Operation *) { return success(); }
 
-  /// Hook for passes to indicate payload roots for successive invocations of
-  /// the transform dialect interpreter.
-  void getPayloadRoots(SmallVectorImpl<Operation *> &targets) {
+  void runOnOperation() override {
     auto *pass = static_cast<Concrete *>(this);
-    targets.push_back(pass->getOperation());
-  }
 
-  /// Hook for passes to construct transform IR separately from payload IR.
-  OwningOpRef<ModuleOp> constructTransformModule(Location) { return nullptr; }
-
-  void runOnOperation() final {
-    auto *pass = static_cast<Concrete *>(this);
-    SmallVector<Operation *> payloadRoots;
-    pass->getPayloadRoots(payloadRoots);
-
-    // The concrete pass may request running the interpreter with payload roots
-    // different from the root of the pass, e.g., when it wants to control the
-    // traversal of the op without delegating it to the transform dialect.
-    for (Operation *root : payloadRoots) {
-      if (failed(pass->runBeforeInterpreter(root)) ||
-          failed(detail::interpreterBaseRunOnOperationImpl(
-              root, pass->getArgument(), sharedTransformModule,
-              pass->transformFileName, pass->debugPayloadRootTag,
-              pass->debugTransformRootTag)) ||
-          failed(pass->runAfterInterpreter(root))) {
-        return pass->signalPassFailure();
-      }
+    Operation *root = pass->getOperation();
+    if (failed(pass->runBeforeInterpreter(root)) ||
+        failed(detail::interpreterBaseRunOnOperationImpl(
+            root, {}, pass->getArgument(), sharedTransformModule,
+            pass->transformFileName, pass->debugPayloadRootTag,
+            pass->debugTransformRootTag)) ||
+        failed(pass->runAfterInterpreter(root))) {
+      return pass->signalPassFailure();
     }
   }
 
@@ -193,6 +169,13 @@ protected:
   /// result of parsing or construction.
   bool hasSeparateTransformModule() const {
     return detail::hasSharedTransformModuleImpl(sharedTransformModule);
+  }
+
+  /// Returns the transform module shared between instances of this pass. Should
+  /// not be modified after the pass initialization.
+  const std::shared_ptr<OwningOpRef<ModuleOp>>
+  getSharedTransformModule() const {
+    return sharedTransformModule;
   }
 
 private:

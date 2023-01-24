@@ -90,8 +90,9 @@ static LogicalResult extractTopLevelTransformOps(
 /// Since the transform dialect may use PDL which may modify the IR, the
 /// underlying implementation clones the transform dialect operations before
 /// applying them.
-static LogicalResult applyTransformsInRegion(Region &transformRegion,
-                                             Operation *target) {
+static LogicalResult applyTransformsInRegion(
+    Region &transformRegion, Operation *target,
+    ArrayRef<ArrayRef<transform::MappedValue>> extraMapping) {
   SmallVector<transform::TransformOpInterface> transforms;
   if (failed(extractTopLevelTransformOps(transformRegion, transforms)))
     return failure();
@@ -110,7 +111,8 @@ static LogicalResult applyTransformsInRegion(Region &transformRegion,
 #endif
     auto xform = cast<transform::TransformOpInterface>(b.clone(*transform));
     auto g = llvm::make_scope_exit([&]() { xform->erase(); });
-    if (failed(transform::applyTransforms(target, xform, options)))
+    if (failed(
+            transform::applyTransforms(target, xform, extraMapping, options)))
       return failure();
   }
   return success();
@@ -321,7 +323,8 @@ bool transform::detail::hasSharedTransformModuleImpl(
 }
 
 LogicalResult transform::detail::interpreterBaseRunOnOperationImpl(
-    Operation *target, StringRef passName,
+    Operation *target, ArrayRef<ArrayRef<transform::MappedValue>> extraMapping,
+    StringRef passName,
     const std::shared_ptr<OwningOpRef<ModuleOp>> &sharedTransformModule,
     const Pass::Option<std::string> &transformFileName,
     const Pass::Option<std::string> &debugPayloadRootTag,
@@ -414,7 +417,8 @@ LogicalResult transform::detail::interpreterBaseRunOnOperationImpl(
   // TODO: lift this assertion.
   assert(transformRegion->getBlocks().size() == 1 &&
          "expected single-region block");
-  if (failed(applyTransformsInRegion(*transformRegion, payloadRoot))) {
+  if (failed(applyTransformsInRegion(*transformRegion, payloadRoot,
+                                     extraMapping))) {
     payloadRoot->emitError() << "transform dialect interpreter failed";
     return failure();
   }
