@@ -60,6 +60,12 @@ struct CaptureStaticValue {
   T &value;
 };
 
+/// Captures the indexing (affine) map that is associated with an operand or a
+/// result of a structured op.
+struct CaptureIndexing : public CaptureStaticValue<AffineMap> {
+  using Base::Base;
+};
+
 /// Captures the (static) size of the dimension.
 struct CaptureDim : public CaptureStaticValue<int64_t> {
   using Base::Base;
@@ -67,6 +73,12 @@ struct CaptureDim : public CaptureStaticValue<int64_t> {
 
 /// Captures the (static) sizes of multiple dimensions.
 struct CaptureDims : public CaptureStaticValue<SmallVector<int64_t>> {
+  using Base::Base;
+};
+
+/// Captures positions of multiple dimensions in the iteration space dimension
+/// list.
+struct CaptureDimPos : public CaptureStaticValue<SmallVector<int64_t>> {
   using Base::Base;
 };
 
@@ -243,6 +255,9 @@ public:
   StructuredOpMatcher &rank(CaptureRank capture);
   StructuredOpMatcher &dim(int64_t dimension, CaptureDim capture);
   StructuredOpMatcher &dim(AllDims tag, CaptureDims captures);
+  StructuredOpMatcher &dim(CaptureDimPos captures, utils::IteratorType kind);
+  StructuredOpMatcher &input(int64_t position, CaptureIndexing indexing);
+  StructuredOpMatcher &output(int64_t position, CaptureIndexing indexing);
 
   //===-------------------------------------------------------------------===//
   // Constraints on input operands.
@@ -548,6 +563,9 @@ struct MatchedConvolutionCaptures {
   int64_t convolutionRank = 0;
   SmallVector<int64_t> convolutionOpSizes = {};
   int64_t convolutionOutputElementalTypeBitWidth = 0;
+  SmallVector<int64_t> parallelDimensions = {};
+  SmallVector<int64_t> reductionDimensions = {};
+  AffineMap inputMap, filterMap, outputMap;
 };
 
 /// Creates a group of matchers for:

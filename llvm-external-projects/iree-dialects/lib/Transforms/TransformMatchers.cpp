@@ -79,7 +79,7 @@ transform_ext::StructuredOpMatcher &
 transform_ext::StructuredOpMatcher::rank(NumEqualsTo rank) {
   predicates.push_back([=](linalg::LinalgOp linalgOp) -> bool {
     LLVM_DEBUG(DBGS() << "rank == " << rank.value);
-    return linalgOp.getNumLoops() >= rank.value;
+    return linalgOp.getNumLoops() == rank.value;
   });
   return *this;
 }
@@ -238,6 +238,66 @@ transform_ext::StructuredOpMatcher::dim(AllDims tag, CaptureDims captures) {
   predicates.push_back([=](linalg::LinalgOp linalgOp) -> bool {
     LLVM_DEBUG(DBGS() << "capture all dimensions");
     captures.value = linalgOp.getStaticLoopRanges();
+    return true;
+  });
+  return *this;
+}
+
+transform_ext::StructuredOpMatcher &
+transform_ext::StructuredOpMatcher::dim(CaptureDimPos captures,
+                                        utils::IteratorType kind) {
+  predicates.push_back([=](linalg::LinalgOp linalgOp) -> bool {
+    LLVM_DEBUG(DBGS() << "capturing positions of "
+                      << utils::stringifyIteratorType(kind) << "dimensions");
+    for (const auto &[pos, iter] :
+         llvm::enumerate(linalgOp.getIteratorTypesArray())) {
+      if (iter != kind)
+        continue;
+      captures.value.push_back(pos);
+    }
+    return true;
+  });
+  return *this;
+}
+
+transform_ext::StructuredOpMatcher &
+transform_ext::StructuredOpMatcher::input(int64_t position,
+                                          CaptureIndexing indexing) {
+  predicates.push_back([=](linalg::LinalgOp linalgOp) {
+    LLVM_DEBUG(DBGS() << "capturing the indexing map of input " << position);
+    int64_t transformedPosition =
+        position >= 0 ? position : linalgOp.getNumDpsInputs() + position;
+    if (transformedPosition >= linalgOp.getNumDpsInputs()) {
+      LLVM_DEBUG(llvm::dbgs() << ", out of bounds");
+      return false;
+    }
+
+    indexing.value = linalgOp.getIndexingMaps()
+                         .getValue()[transformedPosition]
+                         .cast<AffineMapAttr>()
+                         .getValue();
+    return true;
+  });
+  return *this;
+}
+
+transform_ext::StructuredOpMatcher &
+transform_ext::StructuredOpMatcher::output(int64_t position,
+                                           CaptureIndexing indexing) {
+  predicates.push_back([=](linalg::LinalgOp linalgOp) {
+    LLVM_DEBUG(DBGS() << "capturing the indexing map of output " << position);
+    int64_t transformedPosition =
+        position >= 0 ? position : linalgOp.getNumDpsInits() + position;
+    if (transformedPosition >= linalgOp.getNumDpsInits()) {
+      LLVM_DEBUG(llvm::dbgs() << ", out of bounds");
+      return false;
+    }
+
+    indexing.value =
+        linalgOp.getIndexingMaps()
+            .getValue()[linalgOp.getNumDpsInits() + transformedPosition]
+            .cast<AffineMapAttr>()
+            .getValue();
     return true;
   });
   return *this;
@@ -662,16 +722,21 @@ void transform_ext::makeReductionMatcher(
 void transform_ext::makeConvolutionMatcher(
     transform_ext::StructuredOpMatcher &convolution,
     MatchedConvolutionCaptures &captures) {
-  convolution =
-      m_StructuredOp()
-          .rank(NumEqualsTo(9))
-          .rank(CaptureRank(captures.convolutionRank))
-          // Op has a single most-minor reduction.
-          .dim({2, 3, 5, 8}, utils::IteratorType::reduction)
-          // All other dimensions are parallel.
-          .dim(AllDimsExcept({2, 3, 5, 8}), utils::IteratorType::parallel)
-          // Capture op sizes.
-          .dim(AllDims(), CaptureDims(captures.convolutionOpSizes))
-          // Conv must be the only op in there.
-          .allTilableOpsCaptured<func::FuncOp>();
+  convolution = m_StructuredOp()
+                    .input(NumEqualsTo(2))
+                    .input(0, CaptureIndexing(captures.inputMap))
+                    .input(1, CaptureIndexing(captures.filterMap))
+                    .output(NumEqualsTo(1))
+                    .output(0, CaptureIndexing(captures.outputMap))
+                    .rank(NumEqualsTo(9))
+                    .rank(CaptureRank(captures.convolutionRank))
+                    .dim(CaptureDimPos(captures.reductionDimensions),
+                         utils::IteratorType::reduction)
+                    // All other dimensions are parallel.
+                    .dim(CaptureDimPos(captures.parallelDimensions),
+                         utils::IteratorType::parallel)
+                    // Capture op sizes.
+                    .dim(AllDims(), CaptureDims(captures.convolutionOpSizes))
+                    // Conv must be the only op in there.
+                    .allTilableOpsCaptured<func::FuncOp>();
 }
