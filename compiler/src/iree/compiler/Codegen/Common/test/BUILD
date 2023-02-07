@@ -22,6 +22,7 @@ iree_lit_test_suite(
             "bufferize_copy_only_dispatches.mlir",
             "canonicalize_interface_load_store.mlir",
             "convert_to_destination_passing_style.mlir",
+            "convolution_matcher.mlir",
             "dead_alloc.mlir",
             "decompose_linalg_generic.mlir",
             "distribute_gpu_shared_memory.mlir",

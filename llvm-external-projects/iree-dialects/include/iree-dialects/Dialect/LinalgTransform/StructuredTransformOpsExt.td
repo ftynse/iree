@@ -144,8 +144,8 @@ def MatchCallbackOp :
 
   let arguments = (ins StrAttr:$callback_name,
                        FailurePropagationMode:$failure_propagation_mode,
-                       Variadic<TransformHandleTypeInterface>:$inputs);
-  let results = (outs Variadic<TransformHandleTypeInterface>:$outputs);
+                       Variadic<Transform_AnyHandleOrParamType>:$inputs);
+  let results = (outs Variadic<Transform_AnyHandleOrParamType>:$outputs);
   let assemblyFormat = "`failures` `(` $failure_propagation_mode `)` "
                        "$callback_name `(` $inputs `)` attr-dict "
                        "`:` functional-type($inputs, $outputs)";
@@ -199,6 +199,22 @@ def EmitRemarkOp :
       ::mlir::transform::ApplyToEachResultList &results,
       ::mlir::transform::TransformState &state);
   }];
+}
+
+def EmitParamsAsRemarkOp :
+    Op<Transform_Dialect, "iree.emit_params_as_remark",
+       [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+        DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let description = [{
+    Emits a diagnostic remark with the given message followed by the parameter
+    attributes associated with the operand. The diagnostic is emitted at the
+    location of this op.
+  }];
+
+  let arguments = (ins TransformParamTypeInterface:$param,
+                       StrAttr:$message);
+  let assemblyFormat = "$message `,` $param attr-dict `:` type($param)";
+  let cppNamespace = "mlir::transform_ext";
 }
 
 #endif // STRUCTURED_TRANSFORM_OPS_EXT

@@ -260,6 +260,14 @@ public:
   StructuredOpMatcher &output(int64_t position, CaptureIndexing indexing);
 
   //===-------------------------------------------------------------------===//
+  // Higher-level op aspects.
+  //===-------------------------------------------------------------------===//
+  StructuredOpMatcher &
+  convolutionDimensions(CaptureDimPos batch, CaptureDimPos inputChannels,
+                        CaptureDimPos outputChannels, CaptureDimPos image,
+                        CaptureDimPos filter, CaptureDimPos depth);
+
+  //===-------------------------------------------------------------------===//
   // Constraints on input operands.
   //===-------------------------------------------------------------------===//
   /// Adds a predicate checking that the structured op has the given number of
@@ -472,18 +480,54 @@ public:
   /// Returns the number of lists of payload operations.
   int64_t getNumPayloadGroups() const { return payloadGroupLengths.size(); }
 
-  /// Returns the `position`-th list of payload operations.
-  ArrayRef<Operation *> getPayloadGroup(int64_t position) const;
+  /// Returns the `position`-th list of payloads.
+  template <typename T>
+  SmallVector<T> getPayloadGroup(int64_t position) const {
+    static_assert(llvm::is_one_of<T, Operation *, Attribute>::value,
+                  "unsupported payload kind");
+    assert(position < payloadGroupLengths.size());
+    int64_t start = 0;
+    for (int64_t i = 0; i < position; ++i) {
+      start += payloadGroupLengths[i];
+    }
+
+    SmallVector<T> group;
+    group.reserve(payloadGroupLengths[position]);
+    for (int64_t i = start, e = start + payloadGroupLengths[position]; i < e;
+         ++i) {
+      T element = payloads[i].dyn_cast<T>();
+      assert(element && "wrong payload group type used");
+      group.push_back(element);
+    }
+    return group;
+  }
 
   /// Adds a new list of payload operations to the list of lists. The new list
   /// must not contain null operations.
   template <typename Range>
-  int64_t addPayloadGroup(Range operations) {
-    int64_t originalLength = payloadOperations.size();
-    assert(llvm::all_of(operations, [](Operation *op) -> bool { return op; }) &&
-           "null operation");
-    llvm::append_range(payloadOperations, operations);
-    payloadGroupLengths.push_back(payloadOperations.size() - originalLength);
+  int64_t addPayloadGroup(Range group) {
+    int64_t originalLength = payloads.size();
+    using Element = std::remove_reference_t<decltype(*group.begin())>;
+    if constexpr (std::is_convertible_v<Element, Operation *>) {
+      llvm::append_range(
+          payloads,
+          llvm::map_range(
+              group,
+              [](Operation *op) -> llvm::PointerUnion<Operation *, Attribute> {
+                assert(op && "mapping null operation");
+                return op;
+              }));
+    } else if constexpr (std::is_convertible_v<Element, Attribute>) {
+      llvm::append_range(
+          payloads,
+          llvm::map_range(
+              group,
+              [](Attribute attr) -> llvm::PointerUnion<Operation *, Attribute> {
+                assert(attr && "mapping null attribute");
+                return attr;
+              }));
+    }
+    payloadGroupLengths.push_back(payloads.size() - originalLength);
     return payloadGroupLengths.size() - 1;
   }
   void addPayloadGroup(ArrayRef<Operation *> operations) {
@@ -503,8 +547,8 @@ public:
 private:
   /// The flat list of all payload opreations. `payloadGroupLengths` can be used
   /// to compute the sublist that corresponds to one nested list.
-  // TODO: if somebody implements such a flattened vector generically, use it.
-  SmallVector<Operation *> payloadOperations;
+  // TODO: use mlir::RaggedArray<mlir::transform::MappedValue>> when available.
+  SmallVector<llvm::PointerUnion<Operation *, Attribute>> payloads;
   SmallVector<int64_t> payloadGroupLengths;
 };
 
@@ -566,6 +610,10 @@ struct MatchedConvolutionCaptures {
   SmallVector<int64_t> parallelDimensions = {};
   SmallVector<int64_t> reductionDimensions = {};
   AffineMap inputMap, filterMap, outputMap;
+  // TODO; things like rank, parallel and reduction dimensions can be derived
+  // from these.
+  SmallVector<int64_t> batch, inputChannels, outputChannels, image, filter,
+      depth;
 };
 
 /// Creates a group of matchers for:

@@ -304,6 +304,47 @@ transform_ext::StructuredOpMatcher::output(int64_t position,
 }
 
 //===---------------------------------------------------------------------===//
+// Higher-level op aspects.
+//===---------------------------------------------------------------------===//
+
+template <typename T, typename Range>
+auto static_cast_range(Range &&range) {
+  return llvm::map_range(
+      range, [](auto &&element) { return static_cast<T>(element); });
+}
+
+transform_ext::StructuredOpMatcher &
+transform_ext::StructuredOpMatcher::convolutionDimensions(
+    CaptureDimPos batch, CaptureDimPos inputChannels,
+    CaptureDimPos outputChannels, CaptureDimPos image, CaptureDimPos filter,
+    CaptureDimPos depth) {
+  predicates.push_back([=](linalg::LinalgOp linalgOp) {
+    LLVM_DEBUG(DBGS() << "checking for and capturing convolution dimensions");
+    linalg::detail::ConvolutionDimensions dims;
+    linalg::detail::MatchConvolutionResult res =
+        linalg::detail::isConvolutionInterfaceImpl(linalgOp, &dims);
+    StringRef message = linalg::detail::getMatchConvolutionMessage(res);
+    if (!message.empty()) {
+      LLVM_DEBUG(llvm::dbgs() << " -> " << message);
+      return false;
+    }
+
+    llvm::append_range(batch.value, static_cast_range<int64_t>(dims.batch));
+    llvm::append_range(inputChannels.value,
+                       static_cast_range<int64_t>(dims.inputChannel));
+    llvm::append_range(outputChannels.value,
+                       static_cast_range<int64_t>(dims.outputChannel));
+    llvm::append_range(image.value,
+                       static_cast_range<int64_t>(dims.outputImage));
+    llvm::append_range(filter.value,
+                       static_cast_range<int64_t>(dims.filterLoop));
+    llvm::append_range(depth.value, static_cast_range<int64_t>(dims.depth));
+    return true;
+  });
+  return *this;
+}
+
+//===---------------------------------------------------------------------===//
 // Constraints on input operands.
 //===---------------------------------------------------------------------===//
 
@@ -593,21 +634,6 @@ bool transform_ext::StructuredOpMatcher::checkAllTilableMatched(
 }
 
 //===---------------------------------------------------------------------===//
-// MatchCallbackResult.
-//===---------------------------------------------------------------------===//
-
-ArrayRef<Operation *>
-transform_ext::MatchCallbackResult::getPayloadGroup(int64_t position) const {
-  assert(position < payloadGroupLengths.size());
-  int64_t start = 0;
-  for (int64_t i = 0; i < position; ++i) {
-    start += payloadGroupLengths[i];
-  }
-  return llvm::ArrayRef(payloadOperations)
-      .slice(start, payloadGroupLengths[position]);
-}
-
-//===---------------------------------------------------------------------===//
 // Case-specific matcher builders.
 //===---------------------------------------------------------------------===//
 
@@ -722,21 +748,27 @@ void transform_ext::makeReductionMatcher(
 void transform_ext::makeConvolutionMatcher(
     transform_ext::StructuredOpMatcher &convolution,
     MatchedConvolutionCaptures &captures) {
-  convolution = m_StructuredOp()
-                    .input(NumEqualsTo(2))
-                    .input(0, CaptureIndexing(captures.inputMap))
-                    .input(1, CaptureIndexing(captures.filterMap))
-                    .output(NumEqualsTo(1))
-                    .output(0, CaptureIndexing(captures.outputMap))
-                    .rank(NumEqualsTo(9))
-                    .rank(CaptureRank(captures.convolutionRank))
-                    .dim(CaptureDimPos(captures.reductionDimensions),
-                         utils::IteratorType::reduction)
-                    // All other dimensions are parallel.
-                    .dim(CaptureDimPos(captures.parallelDimensions),
-                         utils::IteratorType::parallel)
-                    // Capture op sizes.
-                    .dim(AllDims(), CaptureDims(captures.convolutionOpSizes))
-                    // Conv must be the only op in there.
-                    .allTilableOpsCaptured<func::FuncOp>();
+  convolution =
+      m_StructuredOp()
+          .input(NumEqualsTo(2))
+          .input(0, CaptureIndexing(captures.inputMap))
+          .input(1, CaptureIndexing(captures.filterMap))
+          .output(NumEqualsTo(1))
+          .output(0, CaptureIndexing(captures.outputMap))
+          .rank(CaptureRank(captures.convolutionRank))
+          .dim(CaptureDimPos(captures.reductionDimensions),
+               utils::IteratorType::reduction)
+          // All other dimensions are parallel.
+          .dim(CaptureDimPos(captures.parallelDimensions),
+               utils::IteratorType::parallel)
+          // Capture op sizes.
+          .dim(AllDims(), CaptureDims(captures.convolutionOpSizes))
+          .convolutionDimensions(CaptureDimPos(captures.batch),
+                                 CaptureDimPos(captures.inputChannels),
+                                 CaptureDimPos(captures.outputChannels),
+                                 CaptureDimPos(captures.image),
+                                 CaptureDimPos(captures.filter),
+                                 CaptureDimPos(captures.depth))
+          // Conv must be the only op in there.
+          .allTilableOpsCaptured<func::FuncOp>();
 }

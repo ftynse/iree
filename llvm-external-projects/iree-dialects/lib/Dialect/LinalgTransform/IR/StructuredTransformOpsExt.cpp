@@ -1014,7 +1014,12 @@ DiagnosedSilenceableFailure transform_ext::MatchCallbackOp::apply(
     mlir::transform::TransformState &state) {
   auto setEmptyResults = [&results, this] {
     for (OpResult value : getResults()) {
-      results.set(value, {});
+      if (value.getType().isa<transform::TransformHandleTypeInterface>()) {
+        results.set(value, {});
+      } else {
+        assert(value.getType().isa<transform::TransformParamTypeInterface>());
+        results.setParams(value, {});
+      }
     }
   };
   auto errorOut = [this, &setEmptyResults] {
@@ -1054,7 +1059,14 @@ DiagnosedSilenceableFailure transform_ext::MatchCallbackOp::apply(
   }
 
   for (OpResult value : getResults()) {
-    results.set(value, result.getPayloadGroup(value.getResultNumber()));
+    if (value.getType().isa<transform::TransformHandleTypeInterface>()) {
+      results.set(value,
+                  result.getPayloadGroup<Operation *>(value.getResultNumber()));
+    } else {
+      assert(value.getType().isa<transform::TransformParamTypeInterface>());
+      results.setParams(
+          value, result.getPayloadGroup<Attribute>(value.getResultNumber()));
+    }
   }
   return DiagnosedSilenceableFailure::success();
 }
@@ -1176,8 +1188,8 @@ convolutionCallback(transform_ext::MatchCallbackResult &res, Location loc,
   }
 
   transform_ext::StructuredOpMatcher pattern;
-  transform_ext::MatchedConvolutionCaptures ignore;
-  transform_ext::makeConvolutionMatcher(pattern, ignore);
+  transform_ext::MatchedConvolutionCaptures captures;
+  transform_ext::makeConvolutionMatcher(pattern, captures);
 
   // TODO: need a mechanism for this to go around the entire IR,
   // potentially with list matches for each group.
@@ -1191,7 +1203,21 @@ convolutionCallback(transform_ext::MatchCallbackResult &res, Location loc,
     // TODO: notify properly.
     LLVM_DEBUG({ DBGS() << "pattern: " << pattern.getCaptured() << "\n"; });
 
+    MLIRContext *ctx = op->getContext();
+    auto i64_attr_range = [ctx](auto &&range) {
+      return llvm::map_range(range, [ctx](auto elem) {
+        Builder b(ctx);
+        return b.getI64IntegerAttr(elem);
+      });
+    };
+
     res.addPayloadGroup({pattern.getCaptured()});
+    res.addPayloadGroup(i64_attr_range(captures.batch));
+    res.addPayloadGroup(i64_attr_range(captures.inputChannels));
+    res.addPayloadGroup(i64_attr_range(captures.outputChannels));
+    res.addPayloadGroup(i64_attr_range(captures.image));
+    res.addPayloadGroup(i64_attr_range(captures.filter));
+    res.addPayloadGroup(i64_attr_range(captures.depth));
     return WalkResult::interrupt();
   });
 
@@ -1267,5 +1293,25 @@ DiagnosedSilenceableFailure transform_ext::EmitRemarkOp::applyToOne(
 void transform_ext::EmitRemarkOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   mlir::transform::onlyReadsHandle(getHandle(), effects);
+  mlir::transform::onlyReadsPayload(effects);
+}
+
+//===---------------------------------------------------------------------===//
+// EmitParamsAsRemarkOp
+//===---------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure transform_ext::EmitParamsAsRemarkOp::apply(
+    mlir::transform::TransformResults &results,
+    mlir::transform::TransformState &state) {
+  mlir::InFlightDiagnostic diag = getOperation()->emitRemark(getMessage());
+  for (Attribute attr : state.getParams(getParam())) {
+    diag << " " << attr;
+  }
+  return DiagnosedSilenceableFailure::success();
+}
+
+void transform_ext::EmitParamsAsRemarkOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  mlir::transform::onlyReadsHandle(getParam(), effects);
   mlir::transform::onlyReadsPayload(effects);
 }
