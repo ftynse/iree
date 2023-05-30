@@ -15,6 +15,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/Debug.h"
+#include <mlir/Dialect/Tensor/IR/Tensor.h>
 
 using namespace mlir;
 
@@ -239,7 +240,8 @@ transform_ext::CapturingOpMatcher::operand(int64_t pos,
 }
 
 transform_ext::CapturingOpMatcher &
-transform_ext::CapturingOpMatcher::operand(int64_t pos, ValueMatcher &nested) {
+transform_ext::CapturingOpMatcher::operand(int64_t pos,
+                                           CapturingValueMatcher &nested) {
   addPredicate([pos, &nested](Operation *op) {
     std::optional<int64_t> operandNo = remapNegativeOperandNumber(pos, op);
     if (!operandNo)
@@ -288,7 +290,8 @@ transform_ext::CapturingOpMatcher::result(transform_ext::NumEqualsTo num) {
 }
 
 transform_ext::CapturingOpMatcher &
-transform_ext::CapturingOpMatcher::result(int64_t pos, ValueMatcher &nested) {
+transform_ext::CapturingOpMatcher::result(int64_t pos,
+                                          CapturingValueMatcher &nested) {
   addPredicate([pos, &nested](Operation *op) {
     int64_t updated = pos < 0 ? op->getNumResults() + pos : pos;
     if (updated < 0 || updated >= op->getNumResults()) {
@@ -361,7 +364,8 @@ transform_ext::BlockBodyMatcher &transform_ext::BlockBodyMatcher::argument(
 }
 
 transform_ext::BlockBodyMatcher &
-transform_ext::BlockBodyMatcher::argument(int64_t pos, ValueMatcher &nested) {
+transform_ext::BlockBodyMatcher::argument(int64_t pos,
+                                          CapturingValueMatcher &nested) {
   addPredicate([pos, &nested](Block &block) {
     int64_t updatedPos = pos < 0 ? block.getNumArguments() + pos : pos;
     if (updatedPos < 0 || updatedPos >= block.getNumArguments()) {
@@ -401,7 +405,7 @@ transform_ext::BlockBodyMatcher &transform_ext::BlockBodyMatcher::terminator(
 }
 
 //===---------------------------------------------------------------------===//
-// ValueMatcher
+// CapturingValueMatcher
 //===---------------------------------------------------------------------===//
 
 namespace {
@@ -442,7 +446,7 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
 }
 } // namespace
 
-bool transform_ext::ValueMatcher::match(Value value) {
+bool transform_ext::CapturingValueMatcher::match(Value value) {
   auto debugRAII =
       llvm::make_scope_exit([] { LLVM_DEBUG(DBGS() << "-------\n"); });
   LLVM_DEBUG(DBGS() << "matching " << DebugPrintValueWrapper{value} << "\n");
@@ -467,6 +471,46 @@ bool transform_ext::ValueMatcher::match(Value value) {
 
   captured = value;
   return true;
+}
+
+transform_ext::ShapedValueMatcher::ShapedValueMatcher()
+    : CapturingValueMatcher() {
+  addPredicate([](Value value) {
+    LLVM_DEBUG(DBGS() << "value is of shaped type");
+    return value && value.getType().isa<ShapedType>();
+  });
+}
+
+transform_ext::ShapedValueMatcher &
+transform_ext::ShapedValueMatcher::rank(transform_ext::CaptureRank capture) {
+  addPredicate([=](Value value) {
+    LLVM_DEBUG(DBGS() << "capturing shaped value rank");
+    capture.value = value.getType().cast<ShapedType>().getRank();
+    return true;
+  });
+  return *this;
+}
+
+transform_ext::ShapedValueMatcher &
+transform_ext::ShapedValueMatcher::dim(int64_t dimension, CaptureDim capture) {
+  addPredicate([=](Value value) {
+    LLVM_DEBUG(DBGS() << "capturing shaped value dimension " << dimension);
+    capture.value = value.getType().cast<ShapedType>().getDimSize(dimension);
+    return true;
+  });
+  return *this;
+}
+
+transform_ext::ShapedValueMatcher &
+transform_ext::ShapedValueMatcher::dim(AllDims tag, CaptureDims captures) {
+  (void)tag;
+  addPredicate([=](Value value) {
+    LLVM_DEBUG(DBGS() << "capturing all shaped value dimensions");
+    ArrayRef<int64_t> shape = value.getType().cast<ShapedType>().getShape();
+    captures.value.assign(shape.begin(), shape.end());
+    return true;
+  });
+  return *this;
 }
 
 //===---------------------------------------------------------------------===//
@@ -1481,10 +1525,11 @@ singleOpBodyWithCanonicalArgs(transform_ext::MatcherContext &matcherContext,
 }
 
 /// Match sum(%src, broadcast(%reduction))
-static void matchSubBroadcast(transform_ext::MatcherContext &matcherContext,
-                              transform_ext::StructuredOpMatcher &maxReduction,
-                              transform_ext::ValueMatcher &softmaxSourceOperand,
-                              transform_ext::StructuredOpMatcher *&sub) {
+static void
+matchSubBroadcast(transform_ext::MatcherContext &matcherContext,
+                  transform_ext::StructuredOpMatcher &maxReduction,
+                  transform_ext::CapturingValueMatcher &softmaxSourceOperand,
+                  transform_ext::StructuredOpMatcher *&sub) {
   using namespace transform_ext;
 
   auto &broadcast =

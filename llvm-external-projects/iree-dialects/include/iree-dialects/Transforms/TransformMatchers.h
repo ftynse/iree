@@ -163,7 +163,6 @@ struct OptionalMatch : public SingleValuePredicateParam<bool> {
 struct SingleCombinerReduction {};
 
 class CapturingOpMatcher;
-class ValueMatcher;
 class CapturingValueMatcher;
 class BlockBodyMatcher;
 
@@ -279,7 +278,7 @@ public:
 
   /// Adds a predicate checking that the `pos`-th block argument (recursively)
   /// matches the given value matcher.
-  BlockBodyMatcher &argument(int64_t pos, ValueMatcher &nested);
+  BlockBodyMatcher &argument(int64_t pos, CapturingValueMatcher &nested);
 
   /// Adds a predicate checking that the block has exactly the given number of
   /// operations.
@@ -318,9 +317,14 @@ inline BlockBodyMatcher &m_Block_Or(MatcherContext &matcherContext,
   return matcherContext.allocate<BlockBodyMatcher>(first, second);
 }
 
-/// Base class for value matchers that capture the matched value.
+/// Base class for value matchers that capture the matched value. Stores a list
+/// of predicates and requires all of them to match for the value to match. Once
+/// a value matched, any repeated use just verifies that equality of the value.
 class CapturingValueMatcher : public CapturingMatcherBase {
   friend class CapturingMatcherBase;
+  friend class MatcherContext;
+
+  using PredicateFn = std::function<bool(Value)>;
 
 public:
   /// Resets the captured value to null. This should be called if the same
@@ -334,21 +338,18 @@ public:
   /// Returns the matched value if the match was successful.
   Value getCaptured() const { return captured; }
 
-protected:
-  Value captured = nullptr;
-};
-
-/// Matcher for a value, stores a list of predicates and requires all of them to
-/// match for the value to match. Once a value matched, any repeated use just
-/// verifies that equality of the value.
-class ValueMatcher : public CapturingValueMatcher {
-  using PredicateFn = std::function<bool(Value)>;
-  friend class MatcherContext;
-  ValueMatcher() = default;
-
-public:
   /// Matches the given value, hook for `matchPattern`.
   bool match(Value value);
+
+protected:
+  CapturingValueMatcher() = default;
+
+  template <typename Fn>
+  void addPredicate(Fn &&predicate) {
+    predicates.emplace_back(std::forward<Fn>(predicate));
+  }
+
+  Value captured = nullptr;
 
 private:
   /// Additional predicates to be checked on the value.
@@ -356,8 +357,23 @@ private:
 };
 
 /// Creates a matcher of an arbitrary value.
-inline ValueMatcher &m_Value(MatcherContext &context) {
-  return context.allocate<ValueMatcher>();
+inline CapturingValueMatcher &m_Value(MatcherContext &context) {
+  return context.allocate<CapturingValueMatcher>();
+}
+
+class ShapedValueMatcher : public CapturingValueMatcher {
+  friend class MatcherContext;
+
+  ShapedValueMatcher();
+
+public:
+  ShapedValueMatcher &rank(CaptureRank capture);
+  ShapedValueMatcher &dim(int64_t dimension, CaptureDim capture);
+  ShapedValueMatcher &dim(AllDims tag, CaptureDims captures);
+};
+
+inline ShapedValueMatcher &m_ShapedValue(MatcherContext &context) {
+  return context.allocate<ShapedValueMatcher>();
 }
 
 /// Matcher for operations with additional predicates attachable through the
@@ -413,7 +429,7 @@ public:
 
   /// Adds a predicate checking that the `pos`-th operand of the operation
   /// satisfies the given value matcher.
-  CapturingOpMatcher &operand(int64_t pos, ValueMatcher &nested);
+  CapturingOpMatcher &operand(int64_t pos, CapturingValueMatcher &nested);
 
   /// Adds a predicate checking that the `pos`-th operand of the operation is
   /// defined by `arith.constant` with the value 1.0.
@@ -426,7 +442,7 @@ public:
 
   /// Adds a predicate checking that the `pos`-th result of the operation
   /// satisfies the given value matcher.
-  CapturingOpMatcher &result(int64_t pos, ValueMatcher &nested);
+  CapturingOpMatcher &result(int64_t pos, CapturingValueMatcher &nested);
 
 protected:
   /// Constructs a default operation matcher accepting any operation.
