@@ -17,6 +17,7 @@ namespace iree_compiler {
 namespace gpu {
 
 /// Forward declarations of all supported strategies.
+struct BatchMatmulStrategy;
 struct MatmulStrategy;
 class PadStrategy;
 class SmallReductionStrategy;
@@ -63,6 +64,9 @@ struct GPUStrategy {
 /// Does not support leading or trailing operations atm.
 void buildMatmulTensorCoreStrategy(ImplicitLocOpBuilder &b, Value variantH,
                                    const MatmulStrategy &strategy);
+
+void buildBatchMatmulStrategy(ImplicitLocOpBuilder &b, Value variantH,
+                              const BatchMatmulStrategy &strategy);
 
 //===--------------------------------------------------------------------===//
 // Pad strategies.

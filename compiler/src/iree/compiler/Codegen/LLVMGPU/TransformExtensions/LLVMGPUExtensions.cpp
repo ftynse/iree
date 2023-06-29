@@ -1430,7 +1430,7 @@ public:
       getEffectsBefore(barrier, beforeEffects, /*stopAtBarrier=*/true);
 
       SmallVector<MemoryEffects::EffectInstance> afterEffects;
-      getEffectsAfter(barrier, afterEffects, /*stopAtBarrier=*/false);
+      getEffectsAfter(barrier, afterEffects, /*stopAtBarrier=*/true);
 
       if (!haveConflictingEffects(beforeEffects, afterEffects)) {
         LLVM_DEBUG(DBGS() << "the barrier(s) before is sufficient, removing "

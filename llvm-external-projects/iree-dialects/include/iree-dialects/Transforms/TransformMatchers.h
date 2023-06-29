@@ -639,6 +639,7 @@ public:
   /// constant value.
   StructuredOpMatcher &rank(NumGreaterEqualTo minRank);
   StructuredOpMatcher &rank(NumLowerEqualTo maxRank);
+  StructuredOpMatcher &rank(NumEqualsTo exactRank);
 
   /// Adds a predicate checking that the given iteration space dimension is
   /// static/dynamic. The dimension index may be negative, in which case
@@ -877,6 +878,14 @@ public:
   /// using block arguments in order.
   StructuredOpMatcher &passThroughOp();
 
+  template <typename ElemOpTy, typename ReductionOpTy>
+  StructuredOpMatcher &hasContractionBody() {
+    return hasContractionBody(
+        [](Operation *op) { return isa<ElemOpTy>(op); },
+        [](Operation *op) { return isa<ReductionOpTy>(op); },
+        ElemOpTy::getOperationName(), ReductionOpTy::getOperationName());
+  }
+
 private:
   /// Non-template implementations of nested predicate builders for inputs,
   /// outputs and results. Should not be called directly.
@@ -895,6 +904,11 @@ private:
   // Common util for constant matcher.
   StructuredOpMatcher &input(int64_t position,
                              std::function<bool(llvm::APFloat)> floatValueFn);
+
+  StructuredOpMatcher &
+  hasContractionBody(function_ref<bool(Operation *)> isaElemOpTy,
+                     function_ref<bool(Operation *)> isaReductionOpTy,
+                     StringRef elemOpName, StringRef reductionOpName);
 };
 
 /// Creates a matcher of an arbitrary structured op.
@@ -1096,6 +1110,19 @@ void makeMatmulMatcher(MatcherContext &matcherContext,
                        StructuredOpMatcher *&trailingCapture,
                        MatchedMatmulCaptures &captures,
                        bool mustMatchEntireFunc);
+
+/// Create a group of matchers of batch mamtul with a fill:
+///
+///  batch_matmul(*, *, fill())
+///
+/// and capture various useful quantities. If `mustMatchEntireFunc` is set, the
+/// matcher additionally checks if all tileable operations in the functions are
+/// captured.
+void makeBatchMatmulMatcher(transform_ext::MatcherContext &matcherContext,
+                            transform_ext::StructuredOpMatcher *&bmmCapture,
+                            transform_ext::StructuredOpMatcher *&fillCapture,
+                            transform_ext::MatchedMatmulCaptures &captures,
+                            bool mustMatchEntireFunc);
 
 /// Create a group of matchers for a different code sequence of operations
 /// matching exactly a softmax operation.
